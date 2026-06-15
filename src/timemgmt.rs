@@ -15,14 +15,14 @@ const MOVE_OVERHEAD: u64 = 30;
 /// The fraction per mille that we are ever allowed to use of the bank.
 const MAX_BANK_USABLE: u64 = 600;
 
-pub const STRONG_FORCED_TM_FRAC: u32 = 386;
-pub const WEAK_FORCED_TM_FRAC: u32 = 627;
-pub const DEFAULT_MOVES_TO_GO: u32 = 24;
-pub const HARD_WINDOW_FRAC: u32 = 46;
-pub const OPTIMAL_WINDOW_FRAC: u32 = 73;
-pub const INCREMENT_FRAC: u32 = 94;
-pub const NODE_TM_SUBTREE_MULTIPLIER: u32 = 140;
-pub const FAIL_LOW_TM_BONUS: u32 = 340;
+pub const STRONG_FORCED_TM_FRAC: u32 = 370;
+pub const WEAK_FORCED_TM_FRAC: u32 = 613;
+pub const DEFAULT_MOVES_TO_GO: u32 = 25;
+pub const HARD_WINDOW_FRAC: u32 = 47;
+pub const OPTIMAL_WINDOW_FRAC: u32 = 77;
+pub const INCREMENT_FRAC: u32 = 100;
+pub const NODE_TM_SUBTREE_MULTIPLIER: u32 = 142;
+pub const FAIL_LOW_TM_BONUS: u32 = 361;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Forcedness {
