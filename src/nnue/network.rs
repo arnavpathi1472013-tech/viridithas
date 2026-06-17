@@ -18,7 +18,7 @@ use crate::{
     chess::{
         board::{Board, movegen::attacks_by_type},
         piece::{Black, Col, Colour, Piece, PieceType, White},
-        piecelayout::PieceLayout,
+        piecelayout::{PieceLayout, passer_marker_piece},
         types::Square,
     },
     image::{self, Image},
@@ -1257,8 +1257,8 @@ impl Display for PsqtFeatureUpdate {
 
 #[derive(PartialEq, Eq, Clone, Debug, Default)]
 pub struct PsqtUpdateBuffer {
-    add: ArrayVec<PsqtFeatureUpdate, 2>,
-    sub: ArrayVec<PsqtFeatureUpdate, 2>,
+    add: ArrayVec<PsqtFeatureUpdate, 32>,
+    sub: ArrayVec<PsqtFeatureUpdate, 32>,
 }
 
 impl PsqtUpdateBuffer {
@@ -1273,6 +1273,20 @@ impl PsqtUpdateBuffer {
 
     pub fn add_piece(&mut self, sq: Square, piece: Piece) {
         self.add.push(PsqtFeatureUpdate { sq, piece });
+    }
+
+    /// Appends the passed-pawn marker diff between two board states.
+    ///
+    /// This is a hack.
+    pub fn push_passer_diff(&mut self, before: &PieceLayout, after: &PieceLayout) {
+        let before = before.passer_features();
+        let after = after.passer_features();
+        for sq in after & !before {
+            self.add_piece(sq, passer_marker_piece(sq));
+        }
+        for sq in before & !after {
+            self.clear_piece(sq, passer_marker_piece(sq));
+        }
     }
 
     pub fn adds(&self) -> &[PsqtFeatureUpdate] {
@@ -1349,8 +1363,8 @@ impl BucketAccumulatorCache {
         let bucket = BUCKET_MAP[king.relative_to(colour)];
         let cache_acc = &mut self.accs[bucket][colour];
 
-        let mut adds = ArrayVec::<_, 32>::new();
-        let mut subs = ArrayVec::<_, 32>::new();
+        let mut adds = ArrayVec::<_, 64>::new();
+        let mut subs = ArrayVec::<_, 64>::new();
         self.board_states[colour][bucket].update_iter(board_state, |sq, piece, is_add| {
             let index = feature::psqt_index(colour, king, PsqtFeatureUpdate { sq, piece });
             if is_add {
@@ -1782,7 +1796,19 @@ impl NNUEState {
                 let sub2 = feature::psqt_index(colour, king, sub2);
                 accumulator::vector_add2_sub2_psqt(src, tgt, bucket, add1, add2, sub1, sub2);
             }
-            (_, _) => panic!("invalid update buffer: {updates:?}"),
+            // fallback
+            (adds, subs) => {
+                let mut add_indices = ArrayVec::<_, 32>::new();
+                let mut sub_indices = ArrayVec::<_, 32>::new();
+                for &add in adds {
+                    add_indices.push(feature::psqt_index(colour, king, add));
+                }
+                for &sub in subs {
+                    sub_indices.push(feature::psqt_index(colour, king, sub));
+                }
+                *tgt = src.clone();
+                accumulator::vector_update_inplace_psqt(tgt, bucket, &add_indices, &sub_indices);
+            }
         }
     }
 

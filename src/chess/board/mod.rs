@@ -1090,7 +1090,17 @@ impl Board {
         update_buffer.clear();
         let piece = self.state.mailbox[m.from()].unwrap();
 
+        let touches_pawns = piece.piece_type() == PieceType::Pawn
+            || self.state.mailbox[m.to()].is_some_and(|p| p.piece_type() == PieceType::Pawn);
+        let bbs_before = touches_pawns.then_some(self.state.bbs);
+
         self.make_move_base(m, update_buffer);
+
+        if let Some(bbs_before) = bbs_before {
+            update_buffer
+                .psqt
+                .push_passer_diff(&bbs_before, &self.state.bbs);
+        }
 
         nnue.moves[nnue.current_acc] = MovedPiece {
             from: m.from(),
@@ -1755,6 +1765,114 @@ mod tests {
         let key = board.key_after_null_move();
         board.make_nullmove();
         assert_eq!(board.state.keys.zobrist, key);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // decompresses the embedded network; too slow under miri.
+    fn incremental_nnue_matches_fresh_through_passers() {
+        use super::Board;
+        use crate::nnue::network::{NNUEParams, NNUEState};
+
+        let nnue_params = NNUEParams::decompress_and_alloc().unwrap();
+
+        let cases = [
+            (
+                "7k/8/8/3p4/4P3/8/8/7K w - - 0 1",
+                &["e4d5", "h8g8", "d5d6", "g8h8"][..],
+            ),
+            ("7k/8/3p4/4P3/8/8/8/3R3K w - - 0 1", &["d1d6", "h8g8"][..]),
+        ];
+
+        for (fen, moves) in cases {
+            let mut board = Board::from_fen(fen).unwrap();
+            let mut incremental = NNUEState::new(&board, nnue_params);
+            let mut fresh = NNUEState::new(&board, nnue_params);
+
+            for &uci in moves {
+                let mv = board.parse_uci(uci).unwrap();
+                board.make_move_nnue(mv, &mut incremental);
+
+                // lazily-updated evaluation of the current position.
+                incremental.force(&board, nnue_params);
+                let inc_eval = incremental.evaluate(nnue_params, &board);
+
+                // from-scratch rebuild of the same position.
+                fresh.reïnit_from(&board, nnue_params);
+                let fresh_eval = fresh.evaluate(nnue_params, &board);
+
+                assert_eq!(
+                    inc_eval, fresh_eval,
+                    "{fen}: incremental eval diverged from fresh rebuild after {uci}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn psqt_buffer_reconstructs_passer_features() {
+        use super::Board;
+        use crate::chess::piece::Piece;
+        use crate::chess::piecelayout::PieceLayout;
+        use crate::chess::types::Square;
+        use crate::nnue::network::UpdateBuffer;
+        use std::collections::HashSet;
+
+        fn feature_set(bbs: &PieceLayout) -> HashSet<(Square, Piece)> {
+            let mut set = HashSet::new();
+            PieceLayout::default().update_iter(*bbs, |sq, piece, is_add| {
+                assert!(
+                    is_add,
+                    "a diff from the empty layout should only add features"
+                );
+                assert!(
+                    set.insert((sq, piece)),
+                    "duplicate feature emitted: {piece} on {sq}"
+                );
+            });
+            set
+        }
+
+        // Each case is a move that perturbs the passed-pawn structure.
+        let cases = [
+            ("7k/8/8/3p4/4P3/8/8/7K w - - 0 1", "e4d5"),
+            ("7k/8/8/3p4/4P3/8/8/7K b - - 0 1", "d5e4"),
+            ("7k/8/8/4P3/8/8/8/7K w - - 0 1", "e5e6"),
+            ("7k/P7/8/8/8/8/8/7K w - - 0 1", "a7a8q"),
+        ];
+
+        for (fen, uci) in cases {
+            let mut board = Board::from_fen(fen).unwrap();
+            let before = board.state.bbs;
+            let mv = board.parse_uci(uci).unwrap();
+
+            // reproduce exactly what `make_move_nnue` does to the psqt buffer.
+            let mut buffer = UpdateBuffer::default();
+            board.make_move_base(mv, &mut buffer);
+            let after = board.state.bbs;
+            buffer.psqt.push_passer_diff(&before, &after);
+
+            // Applying the incremental buffer to the parent feature-set must
+            // reconstruct the child feature-set exactly.
+            let mut reconstructed = feature_set(&before);
+            for sub in buffer.psqt.subs() {
+                assert!(
+                    reconstructed.remove(&(sub.sq, sub.piece)),
+                    "{fen} / {uci}: subtracted an absent feature: {sub}"
+                );
+            }
+            for add in buffer.psqt.adds() {
+                assert!(
+                    reconstructed.insert((add.sq, add.piece)),
+                    "{fen} / {uci}: added an already-present feature: {add}"
+                );
+            }
+
+            assert_eq!(
+                reconstructed,
+                feature_set(&after),
+                "{fen} / {uci}: incremental buffer did not reconstruct the target feature-set"
+            );
+        }
     }
 
     #[test]
