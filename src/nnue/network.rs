@@ -1313,8 +1313,8 @@ impl BucketAccumulatorCache {
         let bucket = BUCKET_MAP[king.relative_to(colour)];
         let cache_acc = &mut self.accs[bucket][colour];
 
-        let mut adds = ArrayVec::<_, 32>::new();
-        let mut subs = ArrayVec::<_, 32>::new();
+        let mut adds = ArrayVec::<_, 64>::new();
+        let mut subs = ArrayVec::<_, 64>::new();
         self.board_states[colour][bucket].update_iter(board_state, |sq, piece, is_add| {
             let index = feature::psqt_index(colour, king, PsqtFeatureUpdate { sq, piece });
             if is_add {
