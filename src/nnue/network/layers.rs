@@ -419,7 +419,7 @@ mod simd {
             let half_k = simd::splat_f32(SWISH_K / 2.0);
             for i in 0..D / F32_CHUNK {
                 let gate_preact = simd::load_f32(acts.as_ptr().add(i * F32_CHUNK));
-                let id_preact = simd::load_f32(acts.as_ptr().add(i * F32_CHUNK + D));
+                let id_preact = simd::load_f32(acts.as_ptr().add(i * F32_CHUNK + D * PROJ));
                 let clamped =
                     simd::min_f32(simd::max_f32(simd::add_f32(gate_preact, half_k), zero), k);
                 let swish = simd::mul_f32(simd::mul_f32(gate_preact, clamped), inv_k);
