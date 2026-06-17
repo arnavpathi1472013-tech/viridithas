@@ -1090,13 +1090,17 @@ impl Board {
         update_buffer.clear();
         let piece = self.state.mailbox[m.from()].unwrap();
 
-        let bbs_before = self.state.bbs;
+        let touches_pawns = piece.piece_type() == PieceType::Pawn
+            || self.state.mailbox[m.to()].is_some_and(|p| p.piece_type() == PieceType::Pawn);
+        let bbs_before = touches_pawns.then_some(self.state.bbs);
 
         self.make_move_base(m, update_buffer);
 
-        update_buffer
-            .psqt
-            .push_passer_diff(&bbs_before, &self.state.bbs);
+        if let Some(bbs_before) = bbs_before {
+            update_buffer
+                .psqt
+                .push_passer_diff(&bbs_before, &self.state.bbs);
+        }
 
         nnue.moves[nnue.current_acc] = MovedPiece {
             from: m.from(),
@@ -1771,26 +1775,36 @@ mod tests {
 
         let nnue_params = NNUEParams::decompress_and_alloc().unwrap();
 
-        let mut board = Board::from_fen("7k/8/8/3p4/4P3/8/8/7K w - - 0 1").unwrap();
-        let mut incremental = NNUEState::new(&board, nnue_params);
-        let mut fresh = NNUEState::new(&board, nnue_params);
+        let cases = [
+            (
+                "7k/8/8/3p4/4P3/8/8/7K w - - 0 1",
+                &["e4d5", "h8g8", "d5d6", "g8h8"][..],
+            ),
+            ("7k/8/3p4/4P3/8/8/8/3R3K w - - 0 1", &["d1d6", "h8g8"][..]),
+        ];
 
-        for uci in ["e4d5", "h8g8", "d5d6", "g8h8"] {
-            let mv = board.parse_uci(uci).unwrap();
-            board.make_move_nnue(mv, &mut incremental);
+        for (fen, moves) in cases {
+            let mut board = Board::from_fen(fen).unwrap();
+            let mut incremental = NNUEState::new(&board, nnue_params);
+            let mut fresh = NNUEState::new(&board, nnue_params);
 
-            // lazily-updated evaluation of the current position.
-            incremental.force(&board, nnue_params);
-            let inc_eval = incremental.evaluate(nnue_params, &board);
+            for &uci in moves {
+                let mv = board.parse_uci(uci).unwrap();
+                board.make_move_nnue(mv, &mut incremental);
 
-            // from-scratch rebuild of the same position.
-            fresh.reïnit_from(&board, nnue_params);
-            let fresh_eval = fresh.evaluate(nnue_params, &board);
+                // lazily-updated evaluation of the current position.
+                incremental.force(&board, nnue_params);
+                let inc_eval = incremental.evaluate(nnue_params, &board);
 
-            assert_eq!(
-                inc_eval, fresh_eval,
-                "incremental eval diverged from fresh rebuild after {uci}"
-            );
+                // from-scratch rebuild of the same position.
+                fresh.reïnit_from(&board, nnue_params);
+                let fresh_eval = fresh.evaluate(nnue_params, &board);
+
+                assert_eq!(
+                    inc_eval, fresh_eval,
+                    "{fen}: incremental eval diverged from fresh rebuild after {uci}"
+                );
+            }
         }
     }
 

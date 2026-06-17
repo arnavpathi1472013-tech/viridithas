@@ -19,6 +19,16 @@ pub struct PieceLayout {
     pub colours: [SquareSet; 2],
 }
 
+/// The pawn whose passed-pawn marker occupies `sq`.
+pub fn passer_marker_piece(sq: Square) -> Piece {
+    let colour = if sq < Square::A2 {
+        Colour::White
+    } else {
+        Colour::Black
+    };
+    Piece::new(colour, PieceType::Pawn)
+}
+
 impl PieceLayout {
     pub fn occupied(&self) -> SquareSet {
         self.colours[Colour::White] | self.colours[Colour::Black]
@@ -153,7 +163,7 @@ impl PieceLayout {
         false
     }
 
-    /// Computes the set of “phantom” passed-pawn feature squares for each colour.
+    /// Computes the set of “phantom” passed-pawn feature squares.
     ///
     /// A non-doubled passed pawn on file `f` is encoded as a pawn of its own
     /// colour standing on the back rank (rank 1 for White, rank 8 for Black) of
@@ -163,12 +173,14 @@ impl PieceLayout {
     /// matrix, so feeding these through the usual feature-indexing path is
     /// sufficient.
     ///
-    /// TODO: Do these need to be two separate bitboards?
-    pub fn passer_features(&self) -> [SquareSet; 2] {
+    /// White and black markers occupy disjoint ranks (1 and 8 respectively), so
+    /// a single bitboard suffices. The owning colour is recoverable from the
+    /// rank via [`passer_marker_piece`].
+    pub fn passer_features(&self) -> SquareSet {
         let white_pawns = self.pieces[PieceType::Pawn] & self.colours[Colour::White];
         let black_pawns = self.pieces[PieceType::Pawn] & self.colours[Colour::Black];
 
-        let mut white = SquareSet::EMPTY;
+        let mut markers = SquareSet::EMPTY;
         for sq in white_pawns {
             // a pawn is passed if no enemy pawn lies in front on the same or
             // adjacent files, and not doubled if no friendly pawn lies in front
@@ -176,13 +188,12 @@ impl PieceLayout {
             let passed = (black_pawns.inner() & PASSED_PAWN_MASKS[sq.index()]) == 0;
             let doubled = (white_pawns.inner() & DOUBLED_PAWN_MASKS[sq.index()]) != 0;
             if passed && !doubled {
-                white |= Square::from_rank_file(Rank::One, sq.file()).as_set();
+                markers |= Square::from_rank_file(Rank::One, sq.file()).as_set();
             }
         }
 
         // black is handled by vertically mirroring the board, so we can reuse
         // the white-oriented masks (cf. the trainer-side feature generation).
-        let mut black = SquareSet::EMPTY;
         let white_pawns_flipped = white_pawns.inner().swap_bytes();
         let black_pawns_flipped = black_pawns.inner().swap_bytes();
         for sq in black_pawns {
@@ -190,11 +201,11 @@ impl PieceLayout {
             let passed = (white_pawns_flipped & PASSED_PAWN_MASKS[flipped]) == 0;
             let doubled = (black_pawns_flipped & DOUBLED_PAWN_MASKS[flipped]) != 0;
             if passed && !doubled {
-                black |= Square::from_rank_file(Rank::Eight, sq.file()).as_set();
+                markers |= Square::from_rank_file(Rank::Eight, sq.file()).as_set();
             }
         }
 
-        [white, black]
+        markers
     }
 
     /// Calls `callback` for each piece that is added or removed from `self` to `target`.
@@ -220,16 +231,11 @@ impl PieceLayout {
         // exactly like ordinary pawn features.
         let source_passers = self.passer_features();
         let target_passers = target.passer_features();
-        for colour in Colour::all() {
-            let piece = Piece::new(colour, PieceType::Pawn);
-            let added = target_passers[colour] & !source_passers[colour];
-            let removed = source_passers[colour] & !target_passers[colour];
-            for sq in added {
-                callback(sq, piece, true);
-            }
-            for sq in removed {
-                callback(sq, piece, false);
-            }
+        for sq in target_passers & !source_passers {
+            callback(sq, passer_marker_piece(sq), true);
+        }
+        for sq in source_passers & !target_passers {
+            callback(sq, passer_marker_piece(sq), false);
         }
     }
 
@@ -450,13 +456,15 @@ mod tests {
     #[test]
     fn passer_features_match_expected() {
         let bbs = passer_test_layout();
-        let [white, black] = bbs.passer_features();
+        let markers = bbs.passer_features();
 
         // White: f3 is passed (e3 is blocked by d6, h4 passed but h3 doubled),
-        // so the white markers sit on f1 and h1.
-        assert_eq!(white, Square::F1.as_set() | Square::H1.as_set());
-        // Black: c6 is passed (d6 is blocked by e3), so the marker sits on c8.
-        assert_eq!(black, Square::C8.as_set());
+        // so the white markers sit on f1 and h1. Black: c6 is passed (d6 is
+        // blocked by e3), so the marker sits on c8.
+        assert_eq!(
+            markers,
+            Square::F1.as_set() | Square::H1.as_set() | Square::C8.as_set()
+        );
     }
 
     #[test]

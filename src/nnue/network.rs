@@ -18,7 +18,7 @@ use crate::{
     chess::{
         board::{Board, movegen::attacks_by_type},
         piece::{Black, Col, Colour, Piece, PieceType, White},
-        piecelayout::PieceLayout,
+        piecelayout::{PieceLayout, passer_marker_piece},
         types::Square,
     },
     image::{self, Image},
@@ -1231,14 +1231,11 @@ impl PsqtUpdateBuffer {
     pub fn push_passer_diff(&mut self, before: &PieceLayout, after: &PieceLayout) {
         let before = before.passer_features();
         let after = after.passer_features();
-        for colour in Colour::all() {
-            let pawn = Piece::new(colour, PieceType::Pawn);
-            for sq in after[colour] & !before[colour] {
-                self.add_piece(sq, pawn);
-            }
-            for sq in before[colour] & !after[colour] {
-                self.clear_piece(sq, pawn);
-            }
+        for sq in after & !before {
+            self.add_piece(sq, passer_marker_piece(sq));
+        }
+        for sq in before & !after {
+            self.clear_piece(sq, passer_marker_piece(sq));
         }
     }
 
