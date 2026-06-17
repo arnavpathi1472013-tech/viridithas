@@ -274,3 +274,59 @@ pub fn eval_stats(
 
     Ok(())
 }
+
+pub static PASSED_PAWN_MASKS: [u64; 64] = {
+    // a pawn is passed if there are no enemy pawns in front of it on the same or adjacent files,
+    // up to the end of the board.
+    let mut masks = [0; 64];
+    let mut i = 0;
+    while i < 64 {
+        let file = i % 8;
+        let rank = i / 8;
+        let mut mask = 0;
+        // create in front:
+        if rank < 7 {
+            // same file
+            mask |= 1 << (i + 8);
+            // adjacent files
+            if file > 0 {
+                mask |= 1 << (i + 7);
+            }
+            if file < 7 {
+                mask |= 1 << (i + 9);
+            }
+        }
+        // fill in front:
+        let mut r = rank + 1;
+        while r < 8 {
+            mask |= mask << 8;
+            r += 1;
+        }
+        masks[i] = mask;
+        i += 1;
+    }
+    masks
+};
+
+pub static DOUBLED_PAWN_MASKS: [u64; 64] = {
+    // a pawn is doubled if there is another friendly pawn in front of it on the same file, up to the end of the board.
+    let mut masks = [0; 64];
+    let mut i = 0;
+    while i < 64 {
+        let rank = i / 8;
+        let mut mask = 0;
+        // in front:
+        if rank < 7 {
+            mask |= 1 << (i + 8);
+        }
+        // fill in front:
+        let mut r = rank + 1;
+        while r < 8 {
+            mask |= mask << 8;
+            r += 1;
+        }
+        masks[i] = mask;
+        i += 1;
+    }
+    masks
+};

@@ -1,13 +1,16 @@
 use std::fmt::Display;
 
-use crate::chess::{
-    board::movegen::{
-        self, RAY_BETWEEN, diag_attacks, king_attacks, knight_attacks, orth_attacks, pawn_attacks,
-        pawn_attacks_by,
+use crate::{
+    chess::{
+        board::movegen::{
+            self, RAY_BETWEEN, diag_attacks, king_attacks, knight_attacks, orth_attacks,
+            pawn_attacks, pawn_attacks_by,
+        },
+        piece::{Black, Col, Colour, Piece, PieceType, White},
+        squareset::SquareSet,
+        types::{File, Rank, Square},
     },
-    piece::{Black, Col, Colour, Piece, PieceType, White},
-    squareset::SquareSet,
-    types::{File, Rank, Square},
+    evaluation::{DOUBLED_PAWN_MASKS, PASSED_PAWN_MASKS},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -150,6 +153,50 @@ impl PieceLayout {
         false
     }
 
+    /// Computes the set of “phantom” passed-pawn feature squares for each colour.
+    ///
+    /// A non-doubled passed pawn on file `f` is encoded as a pawn of its own
+    /// colour standing on the back rank (rank 1 for White, rank 8 for Black) of
+    /// file `f`. These pawn-plane squares can never be occupied by a real pawn,
+    /// so they are repurposed as passed-pawn markers without colliding with the
+    /// ordinary piece-square features. The passer weights live in the pawn
+    /// matrix, so feeding these through the usual feature-indexing path is
+    /// sufficient.
+    ///
+    /// TODO: Do these need to be two separate bitboards?
+    pub fn passer_features(&self) -> [SquareSet; 2] {
+        let white_pawns = self.pieces[PieceType::Pawn] & self.colours[Colour::White];
+        let black_pawns = self.pieces[PieceType::Pawn] & self.colours[Colour::Black];
+
+        let mut white = SquareSet::EMPTY;
+        for sq in white_pawns {
+            // a pawn is passed if no enemy pawn lies in front on the same or
+            // adjacent files, and not doubled if no friendly pawn lies in front
+            // on the same file.
+            let passed = (black_pawns.inner() & PASSED_PAWN_MASKS[sq.index()]) == 0;
+            let doubled = (white_pawns.inner() & DOUBLED_PAWN_MASKS[sq.index()]) != 0;
+            if passed && !doubled {
+                white |= Square::from_rank_file(Rank::One, sq.file()).as_set();
+            }
+        }
+
+        // black is handled by vertically mirroring the board, so we can reuse
+        // the white-oriented masks (cf. the trainer-side feature generation).
+        let mut black = SquareSet::EMPTY;
+        let white_pawns_flipped = white_pawns.inner().swap_bytes();
+        let black_pawns_flipped = black_pawns.inner().swap_bytes();
+        for sq in black_pawns {
+            let flipped = sq.flip_rank().index();
+            let passed = (white_pawns_flipped & PASSED_PAWN_MASKS[flipped]) == 0;
+            let doubled = (black_pawns_flipped & DOUBLED_PAWN_MASKS[flipped]) != 0;
+            if passed && !doubled {
+                black |= Square::from_rank_file(Rank::Eight, sq.file()).as_set();
+            }
+        }
+
+        [white, black]
+    }
+
     /// Calls `callback` for each piece that is added or removed from `self` to `target`.
     pub fn update_iter(&self, target: Self, mut callback: impl FnMut(Square, Piece, bool)) {
         for colour in Colour::all() {
@@ -165,6 +212,23 @@ impl PieceLayout {
                 for sq in removed {
                     callback(sq, piece, false);
                 }
+            }
+        }
+
+        // Diff the passed-pawn marker features. These are emitted as pawns
+        // standing on the back rank, which the feature-indexing path treats
+        // exactly like ordinary pawn features.
+        let source_passers = self.passer_features();
+        let target_passers = target.passer_features();
+        for colour in Colour::all() {
+            let piece = Piece::new(colour, PieceType::Pawn);
+            let added = target_passers[colour] & !source_passers[colour];
+            let removed = source_passers[colour] & !target_passers[colour];
+            for sq in added {
+                callback(sq, piece, true);
+            }
+            for sq in removed {
+                callback(sq, piece, false);
             }
         }
     }
@@ -356,5 +420,83 @@ impl Display for PieceLayout {
             writeln!(f, "WARNING: Some square-sets are overlapping")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PieceLayout, SquareSet};
+    use crate::chess::{
+        piece::{Piece, PieceType},
+        types::Square,
+    };
+
+    /// Builds the layout for `k7/8/2pp4/8/7P/4PP1P/8/7K`, the same board used
+    /// in the `feature_generation` test in bullet. One pawn of each colour
+    /// is passed; the doubled white h-pawn is not.
+    fn passer_test_layout() -> PieceLayout {
+        let mut bbs = PieceLayout::default();
+        bbs.set_piece_at(Square::A8, Piece::BK);
+        bbs.set_piece_at(Square::C6, Piece::BP);
+        bbs.set_piece_at(Square::D6, Piece::BP);
+        bbs.set_piece_at(Square::H4, Piece::WP);
+        bbs.set_piece_at(Square::E3, Piece::WP);
+        bbs.set_piece_at(Square::F3, Piece::WP);
+        bbs.set_piece_at(Square::H3, Piece::WP);
+        bbs.set_piece_at(Square::H1, Piece::WK);
+        bbs
+    }
+
+    #[test]
+    fn passer_features_match_expected() {
+        let bbs = passer_test_layout();
+        let [white, black] = bbs.passer_features();
+
+        // White: f3 is passed (e3 is blocked by d6, h4 passed but h3 doubled),
+        // so the white markers sit on f1 and h1.
+        assert_eq!(white, Square::F1.as_set() | Square::H1.as_set());
+        // Black: c6 is passed (d6 is blocked by e3), so the marker sits on c8.
+        assert_eq!(black, Square::C8.as_set());
+    }
+
+    #[test]
+    fn update_iter_emits_passer_diffs() {
+        let bbs = passer_test_layout();
+
+        // From an empty layout, every passer marker should be added.
+        let mut added = SquareSet::EMPTY;
+        let mut removed = SquareSet::EMPTY;
+        PieceLayout::default().update_iter(bbs, |sq, piece, is_add| {
+            // back-rank pawns are the passer markers (real pawns can't be there).
+            if piece.piece_type() == PieceType::Pawn
+                && matches!(
+                    sq.rank(),
+                    crate::chess::types::Rank::One | crate::chess::types::Rank::Eight
+                )
+            {
+                if is_add {
+                    added |= sq.as_set();
+                } else {
+                    removed |= sq.as_set();
+                }
+            }
+        });
+        assert_eq!(
+            added,
+            Square::F1.as_set() | Square::H1.as_set() | Square::C8.as_set()
+        );
+        assert_eq!(removed, SquareSet::EMPTY);
+
+        // Identity transition emits no passer changes.
+        let mut touched = false;
+        bbs.update_iter(bbs, |sq, _piece, _is_add| {
+            if matches!(
+                sq.rank(),
+                crate::chess::types::Rank::One | crate::chess::types::Rank::Eight
+            ) {
+                touched = true;
+            }
+        });
+        assert!(!touched, "identity update should not touch passer features");
     }
 }

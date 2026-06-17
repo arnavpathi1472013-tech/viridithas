@@ -1207,8 +1207,8 @@ impl Display for PsqtFeatureUpdate {
 
 #[derive(PartialEq, Eq, Clone, Debug, Default)]
 pub struct PsqtUpdateBuffer {
-    add: ArrayVec<PsqtFeatureUpdate, 2>,
-    sub: ArrayVec<PsqtFeatureUpdate, 2>,
+    add: ArrayVec<PsqtFeatureUpdate, 32>,
+    sub: ArrayVec<PsqtFeatureUpdate, 32>,
 }
 
 impl PsqtUpdateBuffer {
@@ -1223,6 +1223,23 @@ impl PsqtUpdateBuffer {
 
     pub fn add_piece(&mut self, sq: Square, piece: Piece) {
         self.add.push(PsqtFeatureUpdate { sq, piece });
+    }
+
+    /// Appends the passed-pawn marker diff between two board states.
+    ///
+    /// This is a hack.
+    pub fn push_passer_diff(&mut self, before: &PieceLayout, after: &PieceLayout) {
+        let before = before.passer_features();
+        let after = after.passer_features();
+        for colour in Colour::all() {
+            let pawn = Piece::new(colour, PieceType::Pawn);
+            for sq in after[colour] & !before[colour] {
+                self.add_piece(sq, pawn);
+            }
+            for sq in before[colour] & !after[colour] {
+                self.clear_piece(sq, pawn);
+            }
+        }
     }
 
     pub fn adds(&self) -> &[PsqtFeatureUpdate] {
@@ -1732,7 +1749,19 @@ impl NNUEState {
                 let sub2 = feature::psqt_index(colour, king, sub2);
                 accumulator::vector_add2_sub2_psqt(src, tgt, bucket, add1, add2, sub1, sub2);
             }
-            (_, _) => panic!("invalid update buffer: {updates:?}"),
+            // fallback
+            (adds, subs) => {
+                let mut add_indices = ArrayVec::<_, 32>::new();
+                let mut sub_indices = ArrayVec::<_, 32>::new();
+                for &add in adds {
+                    add_indices.push(feature::psqt_index(colour, king, add));
+                }
+                for &sub in subs {
+                    sub_indices.push(feature::psqt_index(colour, king, sub));
+                }
+                *tgt = src.clone();
+                accumulator::vector_update_inplace_psqt(tgt, bucket, &add_indices, &sub_indices);
+            }
         }
     }
 
