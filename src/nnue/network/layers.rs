@@ -417,7 +417,7 @@ mod simd {
             let k = simd::splat_f32(SWISH_K);
             let inv_k = simd::splat_f32(1.0 / SWISH_K);
             let half_k = simd::splat_f32(SWISH_K / 2.0);
-            for i in 0..D / F32_CHUNK {
+            for i in 0..D * PROJ / F32_CHUNK {
                 let gate_preact = simd::load_f32(acts.as_ptr().add(i * F32_CHUNK));
                 let id_preact = simd::load_f32(acts.as_ptr().add(i * F32_CHUNK + D * PROJ));
                 let clamped =
