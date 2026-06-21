@@ -62,7 +62,7 @@ pub const L1_SIZE: usize = 1024;
 /// The size of the layerstack stream.
 pub const D: usize = 32;
 /// The up-projection for layerstack feedforward layers.
-pub const PROJ: usize = 1;
+pub const PROJ: usize = 2;
 /// The number of output heads.
 pub const HEADS: usize = 1;
 /// The quantisation factor for the feature transformer weights.
