@@ -138,10 +138,10 @@ struct UnquantisedNetwork {
     l2f_down_weights:  [[f32; D]; D * PROJ],
     l2x_down_biases:   [[f32; D]; OUTPUT_BUCKETS],
     l2f_down_biases:    [f32; D],
-    l3x_weights:      [[[f32;   HEADS]; OUTPUT_BUCKETS]; D],
-    l3f_weights:       [[f32;   HEADS]; D],
-    l3x_biases:        [[f32;   HEADS]; OUTPUT_BUCKETS],
-    l3f_biases:         [f32;   HEADS],
+    l3x_weights:      [[[f32; HEADS]; OUTPUT_BUCKETS]; D],
+    l3f_weights:       [[f32; HEADS]; D],
+    l3x_biases:        [[f32; HEADS]; OUTPUT_BUCKETS],
+    l3f_biases:         [f32; HEADS],
 }
 
 /// The floating-point parameters of the network, after de-factorisation.
@@ -157,8 +157,8 @@ struct MergedNetwork {
     l2_up_biases:     [[f32; D * PROJ * 2]; OUTPUT_BUCKETS],
     l2_down_weights: [[[f32; D]; OUTPUT_BUCKETS]; D * PROJ],
     l2_down_biases:   [[f32; D]; OUTPUT_BUCKETS],
-    l3_weights:      [[[f32;   HEADS]; OUTPUT_BUCKETS]; D],
-    l3_biases:        [[f32;   HEADS]; OUTPUT_BUCKETS],
+    l3_weights:      [[[f32; HEADS]; OUTPUT_BUCKETS]; D],
+    l3_biases:        [[f32; HEADS]; OUTPUT_BUCKETS],
 }
 
 /// A quantised network file, for compressed embedding.
@@ -175,8 +175,8 @@ struct QuantisedNetwork {
     l2_up_biases:     [[f32; D * PROJ * 2]; OUTPUT_BUCKETS],
     l2_down_weights: [[[f32; D]; OUTPUT_BUCKETS]; D * PROJ],
     l2_down_biases:   [[f32; D]; OUTPUT_BUCKETS],
-    l3_weights:      [[[f32;   HEADS]; OUTPUT_BUCKETS]; D],
-    l3_biases:        [[f32;   HEADS]; OUTPUT_BUCKETS],
+    l3_weights:      [[[f32; HEADS]; OUTPUT_BUCKETS]; D],
+    l3_biases:        [[f32; HEADS]; OUTPUT_BUCKETS],
 }
 
 /// The parameters of viri's neural network, quantised and permuted
@@ -194,7 +194,7 @@ pub struct NNUEParams {
     pub l2_down_weights:  [Align<[f32; D * D * PROJ]>; OUTPUT_BUCKETS],
     pub l2_down_bias:     [Align<[f32; D]>; OUTPUT_BUCKETS],
     pub l3_weights:      [[Align<[f32; D]>; HEADS]; OUTPUT_BUCKETS],
-    pub l3_bias:                  [[f32; HEADS]; OUTPUT_BUCKETS],
+    pub l3_bias:                [[f32; HEADS]; OUTPUT_BUCKETS],
 }
 
 // const REPERMUTE_INDICES: [usize; L1_SIZE / 2] = {
@@ -403,6 +403,8 @@ impl UnquantisedNetwork {
     }
 
     fn read(reader: &mut impl std::io::Read) -> anyhow::Result<Box<Self>> {
+        const FILLER: &[u8; 6] = b"bullet";
+
         // SAFETY: NNUEParams can be zeroed.
         unsafe {
             let mut net = Self::zeroed();
@@ -411,6 +413,22 @@ impl UnquantisedNetwork {
                 size_of::<Self>(),
             );
             reader.read_exact(mem)?;
+
+            let mut trailing = Vec::new();
+            reader
+                .read_to_end(&mut trailing)
+                .with_context(|| "Failed to check for trailing data after reading network.")?;
+            anyhow::ensure!(
+                trailing.len() < 64
+                    && trailing
+                        .iter()
+                        .enumerate()
+                        .all(|(i, &b)| b == FILLER[i % FILLER.len()]),
+                "input contained {} unexpected trailing byte(s) after the expected {} bytes",
+                trailing.len(),
+                size_of::<Self>()
+            );
+
             Ok(net)
         }
     }
