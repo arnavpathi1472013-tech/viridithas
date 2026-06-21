@@ -2,7 +2,7 @@ use std::{
     fmt::{Debug, Display},
     fs::{File, OpenOptions},
     hash::Hasher,
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter, Read, Write},
     mem::size_of,
     ops::Deref,
     path::Path,
@@ -913,27 +913,36 @@ impl NNUEParams {
 
         let mut net = QuantisedNetwork::zeroed();
         // SAFETY: QN is POD and we only write to it.
-        let mut mem = unsafe {
+        let mem = unsafe {
             std::slice::from_raw_parts_mut(
                 std::ptr::from_mut(net.as_mut()).cast::<u8>(),
                 size_of::<QuantisedNetwork>(),
             )
         };
-        let expected_bytes = mem.len() as u64;
+        let expected_bytes = mem.len();
         let decoding_start = std::time::Instant::now();
         let mut decoder = ZstdDecoder::new(EMBEDDED_NNUE)
             .with_context(|| "Failed to construct zstd decoder for NNUE weights.")?;
-        let bytes_written = std::io::copy(&mut decoder, &mut mem)
-            .with_context(|| "Failed to decompress NNUE weights.")?;
+
+        decoder.read_exact(mem).with_context(|| {
+            format!("Failed to decompress {expected_bytes} bytes of NNUE weights.")
+        })?;
+
+        let mut trailing = [0u8; 1];
+        let trailing_bytes = decoder
+            .read(&mut trailing)
+            .with_context(|| "Failed to check for trailing data after NNUE weights.")?;
+        anyhow::ensure!(
+            trailing_bytes == 0,
+            "decompressed NNUE weights contained more data than the expected {expected_bytes} bytes"
+        );
+
         let decoding_time = decoding_start.elapsed();
         println!(
             "info string decompressed NNUE weights in {}us",
             decoding_time.as_micros()
         );
-        anyhow::ensure!(
-            bytes_written == expected_bytes,
-            "encountered issue while decompressing NNUE weights, expected {expected_bytes} bytes, but got {bytes_written}"
-        );
+
         let use_simd = cfg!(any(target_arch = "x86_64", target_feature = "neon"));
         let net = net.permute(use_simd);
 
